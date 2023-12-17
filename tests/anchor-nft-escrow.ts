@@ -106,7 +106,7 @@ describe("anchor-nft-escrow", () => {
     .then(log)
   })
 
-  it("Creates a FtA", async () => {
+  xit("Creates a FtA", async () => {
     const umi = createUmi(connection.rpcEndpoint);
     let umiKeypair = umi.eddsa.createKeypairFromSecretKey(maker.secretKey);
     const signerKeypair = createSignerFromKeypair(umi, umiKeypair);
@@ -179,7 +179,7 @@ describe("anchor-nft-escrow", () => {
     metadataA = PublicKey.findProgramAddressSync(metadata_seeds, new PublicKey(MPL_TOKEN_METADATA_PROGRAM_ID))[0];
   });
 
-  it("Creates a FtB", async () => {
+  xit("Creates a FtB", async () => {
     const umi = createUmi(connection.rpcEndpoint);
     let umiKeypair = umi.eddsa.createKeypairFromSecretKey(maker.secretKey);
     const signerKeypair = createSignerFromKeypair(umi, umiKeypair);
@@ -252,7 +252,7 @@ describe("anchor-nft-escrow", () => {
     metadataB = PublicKey.findProgramAddressSync(metadata_seeds, new PublicKey(MPL_TOKEN_METADATA_PROGRAM_ID))[0];
   });
 
-  xit("Creates a NftA", async () => {
+  it("Creates a NftA", async () => {
     // Metaplex Setup
     const umi = createUmi(connection.rpcEndpoint);
     let umiKeypair = umi.eddsa.createKeypairFromSecretKey(maker.secretKey);
@@ -329,7 +329,7 @@ describe("anchor-nft-escrow", () => {
     masterEditionA = PublicKey.findProgramAddressSync(master_edition_seeds, new PublicKey(MPL_TOKEN_METADATA_PROGRAM_ID))[0]; 
   });
 
-  xit("Creates a NftB", async () => {
+  it("Creates a NftB", async () => {
     // Metaplex Setup
     const umi = createUmi(connection.rpcEndpoint);
     let umiKeypair = umi.eddsa.createKeypairFromSecretKey(taker.secretKey);
@@ -601,7 +601,7 @@ describe("anchor-nft-escrow", () => {
     console.log("takerTokenRecordB", takerTokenRecordB.toString())
   });
 
-  describe("FT escrow", () => {
+  xdescribe("FT escrow", () => {
     
     it("Make", async () => {
       const escrow_seeds = [
@@ -629,7 +629,124 @@ describe("anchor-nft-escrow", () => {
         metadataA,
         masterEditionA: null,
         makerTokenRecordA: null,
-        vaultTokenRecordA: maker.publicKey,
+        vaultTokenRecordA: anchor.web3.Keypair.generate().publicKey,
+        vault,
+        escrow,
+        sysvarInstructions: anchor.web3.SYSVAR_INSTRUCTIONS_PUBKEY,
+        tokenMetadataProgram: MPL_TOKEN_METADATA_PROGRAM_ID,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+      })
+      .signers([maker]).rpc({skipPreflight: true}).then(confirm).then(log);
+    });
+    
+    it("Close", async () => {
+      const escrow_seeds = [
+        Buffer.from('escrow'),
+        new PublicKey(maker.publicKey).toBuffer(),
+        new PublicKey(mintA).toBuffer(),
+        new PublicKey(mintB).toBuffer(),
+      ];
+
+      escrow = await PublicKey.findProgramAddressSync(escrow_seeds, programId)[0];
+
+      vault = await getAssociatedTokenAddressSync(
+        mintA,
+        escrow,
+        true
+      );
+
+      const signature = await program.methods
+      .close()
+      .accounts({
+        maker: maker.publicKey,
+        makerAta: makerAtaA,
+        mintA,
+        mintB,
+        metadataA,
+        masterEditionA: null,
+        makerTokenRecordA: null,
+        vaultTokenRecordA: null,
+        vault,
+        escrow,
+        sysvarInstructions: anchor.web3.SYSVAR_INSTRUCTIONS_PUBKEY,
+        tokenMetadataProgram: MPL_TOKEN_METADATA_PROGRAM_ID,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+      })
+      .signers([maker]).rpc({skipPreflight: true}).then(confirm).then(log);
+    });
+  });
+
+  describe("NFT escrow", () => {
+    
+    it("Make", async () => {
+      const escrow_seeds = [
+        Buffer.from('escrow'),
+        new PublicKey(maker.publicKey).toBuffer(),
+        new PublicKey(mintA).toBuffer(),
+        new PublicKey(mintB).toBuffer(),
+      ];
+
+      escrow = await PublicKey.findProgramAddressSync(escrow_seeds, programId)[0];
+
+      vault = await getAssociatedTokenAddressSync(
+        mintA,
+        escrow,
+        true
+      );
+
+      const signature = await program.methods
+      .make(new anchor.BN(1))
+      .accounts({
+        maker: maker.publicKey,
+        makerAta: makerAtaA,
+        mintA,
+        mintB,
+        metadataA,
+        masterEditionA,
+        makerTokenRecordA: null,
+        vaultTokenRecordA: anchor.web3.Keypair.generate().publicKey,
+        vault,
+        escrow,
+        sysvarInstructions: anchor.web3.SYSVAR_INSTRUCTIONS_PUBKEY,
+        tokenMetadataProgram: MPL_TOKEN_METADATA_PROGRAM_ID,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+      })
+      .signers([maker]).rpc({skipPreflight: true}).then(confirm).then(log);
+    });
+    
+    it("Close", async () => {
+      const escrow_seeds = [
+        Buffer.from('escrow'),
+        new PublicKey(maker.publicKey).toBuffer(),
+        new PublicKey(mintA).toBuffer(),
+        new PublicKey(mintB).toBuffer(),
+      ];
+
+      escrow = await PublicKey.findProgramAddressSync(escrow_seeds, programId)[0];
+
+      vault = await getAssociatedTokenAddressSync(
+        mintA,
+        escrow,
+        true
+      );
+
+      const signature = await program.methods
+      .close()
+      .accounts({
+        maker: maker.publicKey,
+        makerAta: makerAtaA,
+        mintA,
+        mintB,
+        metadataA,
+        masterEditionA,
+        makerTokenRecordA: null,
+        vaultTokenRecordA: null,
         vault,
         escrow,
         sysvarInstructions: anchor.web3.SYSVAR_INSTRUCTIONS_PUBKEY,

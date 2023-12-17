@@ -12,7 +12,7 @@ use anchor_spl::{
 };
 use mpl_token_metadata::types::TransferArgs;
 
-use crate::state::Escrow;
+use crate::state::{Escrow, MintType};
 
 #[derive(Accounts)]
 pub struct Make<'info> {
@@ -103,13 +103,9 @@ impl<'info> Make<'info> {
         let mint_a_key = self.mint_a.key();
         let metadata_a_token_standard = self.metadata_a.token_standard.as_ref().unwrap();
         let token_metadata_program_key = self.token_metadata_program.key();
-        let mut master_edition_info: AccountInfo<'_>;
-        let mut token_record_info: AccountInfo<'_>;
-        let mut vault_token_record_info: AccountInfo<'_>;
-
-        self.escrow.maker = *self.maker.key;
-        self.escrow.mint_a = *self.mint_a.to_account_info().key;
-        self.escrow.mint_b = *self.mint_b.to_account_info().key;
+        let master_edition_info: AccountInfo<'_>;
+        let token_record_info: AccountInfo<'_>;
+        let vault_token_record_info: AccountInfo<'_>;
 
         // Set-up the Instruction based on the token standard
         let mut edition: Option<&AccountInfo> = None;
@@ -121,7 +117,7 @@ impl<'info> Make<'info> {
         };
 
         if metadata_a_token_standard == &TokenStandard::Fungible {
-            self.escrow.mint_a_type = 0;
+            self.escrow.mint_a_type = MintType::Fungible;
         } else if metadata_a_token_standard == &TokenStandard::NonFungible {
             master_edition_info = self.master_edition_a.as_ref().unwrap().to_account_info();
             edition = Some(&master_edition_info);
@@ -129,7 +125,7 @@ impl<'info> Make<'info> {
                 amount: 1,
                 authorization_data: None,
             };
-            self.escrow.mint_a_type = 1;
+            self.escrow.mint_a_type = MintType::NonFungible;
         } else if metadata_a_token_standard == &TokenStandard::ProgrammableNonFungible {
 
             //Check the token record
@@ -155,7 +151,7 @@ impl<'info> Make<'info> {
                 amount: 1,
                 authorization_data: None,
             };
-            self.escrow.mint_a_type = 2;
+            self.escrow.mint_a_type = MintType::ProgrammableNonFungible;
         };
 
         // Build the TransferCpi instruction to transfer the token from the maker to the escrow
