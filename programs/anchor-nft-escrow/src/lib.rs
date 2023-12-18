@@ -16,9 +16,9 @@ pub mod nft_escrow {
         ctx.accounts.make(amount)
     }
 
-    // pub fn take(ctx: Context<Take>) -> Result<()> {
-    //     ctx.accounts.take()
-    // }
+    pub fn take(ctx: Context<Take>, amount: u64) -> Result<()> {
+        ctx.accounts.take(amount, ctx.bumps)
+    }
 
     pub fn close(ctx: Context<Close>) -> Result<()> {
         ctx.accounts.close(ctx.bumps)

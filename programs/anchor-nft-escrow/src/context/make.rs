@@ -134,7 +134,7 @@ impl<'info> Make<'info> {
                 token_metadata_program_key.as_ref(),
                 mint_a_key.as_ref(),
                 b"token_record",
-                self.maker_ata.to_account_info().key.as_ref(),
+                self.vault.to_account_info().key.as_ref(),
             ];
             let (vault_token_record_a, _bump) = Pubkey::find_program_address(&token_record_seed, &token_metadata_program_key);
             require_eq!(vault_token_record_a, self.vault_token_record_a.key());

@@ -47,18 +47,9 @@ pub struct Close<'info> {
         bump,
     )]
     pub master_edition_a: Option<Box<Account<'info, MasterEditionAccount>>>,
-    #[account(
-        mut,
-        seeds = [
-            b"metadata",
-            token_metadata_program.key().as_ref(),
-            mint_a.key().as_ref(),
-            b"token_record",
-            mint_a.key().as_ref(),
-            ],
-        seeds::program = token_metadata_program.key(),
-        bump,)]
-    pub maker_token_record_a: Option<Box<Account<'info, TokenRecordAccount>>>,
+    #[account(mut)]
+    /// CHECK: we don't need to check this
+    pub maker_token_record_a: UncheckedAccount<'info>,
     #[account(
         mut,
         seeds = [
@@ -102,6 +93,8 @@ impl<'info> Close<'info> {
         bumps: CloseBumps,
     ) -> Result<()> {
 
+        let mint_a_key = self.mint_a.key();
+        let token_metadata_program_key = self.token_metadata_program.key();
         let master_edition_info: AccountInfo<'_>;
         let token_record_info: AccountInfo<'_>;
         let vault_token_record_info: AccountInfo<'_>;
@@ -126,8 +119,20 @@ impl<'info> Close<'info> {
                 };
             },
             ProgrammableNonFungible => {
+
+                //Check the token record
+                let token_record_seed = [
+                    b"metadata",
+                    token_metadata_program_key.as_ref(),
+                    mint_a_key.as_ref(),
+                    b"token_record",
+                    self.maker_ata.to_account_info().key.as_ref(),
+                ];
+                let (maker_token_record_a, _bump) = Pubkey::find_program_address(&token_record_seed, &token_metadata_program_key);
+                require_eq!(maker_token_record_a, self.maker_token_record_a.key());
+
                 master_edition_info = self.master_edition_a.as_ref().unwrap().to_account_info();
-                token_record_info = self.maker_token_record_a.as_ref().unwrap().to_account_info();
+                token_record_info = self.maker_token_record_a.as_ref().to_account_info();
                 vault_token_record_info = self.vault_token_record_a.as_ref().unwrap().to_account_info();
 
                 edition = Some(&master_edition_info);
