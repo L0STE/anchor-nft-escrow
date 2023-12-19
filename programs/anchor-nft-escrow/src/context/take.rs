@@ -1,6 +1,6 @@
 use solana_program::*;
 
-use anchor_lang::prelude::*;
+use anchor_lang::{prelude::*, Discriminator};
 use anchor_spl::{
     token::{Mint, TokenAccount, Token}, 
     metadata::{MetadataAccount, MasterEditionAccount, Metadata, TokenRecordAccount, 
@@ -8,135 +8,44 @@ use anchor_spl::{
             instructions::{TransferCpi, TransferCpiAccounts, TransferInstructionArgs}, 
             types::TokenStandard}
         },
-    associated_token::AssociatedToken
+    associated_token::{AssociatedToken, get_associated_token_address}
 };
 use mpl_token_metadata::types::TransferArgs;
+use sysvar::instructions::{load_current_index_checked, load_instruction_at_checked};
 
-use crate::state::{Escrow, MintType::*};
+use crate::{
+    state::Escrow,
+    errors::{EscrowError, IntrospectionError},
+};
 
 #[derive(Accounts)]
 pub struct Take<'info> {
     #[account(mut)]
-    pub taker: Signer<'info>,
-    #[account(mut)]
     pub maker: SystemAccount<'info>,
-
-    pub mint_a: Box<Account<'info, Mint>>,
-    pub mint_b: Box<Account<'info, Mint>>,  
-
-    #[account(
-        mut,
-        seeds = [
-            b"metadata",
-            token_metadata_program.key().as_ref(),
-            mint_a.key().as_ref()
-        ],
-        seeds::program = token_metadata_program.key(),
-        bump,
-    )]
-    pub metadata_a: Box<Account<'info, MetadataAccount>>,
-    #[account(
-        seeds = [
-            b"metadata",
-            token_metadata_program.key().as_ref(),
-            mint_a.key().as_ref(),
-            b"edition",
-            ],
-        seeds::program = token_metadata_program.key(),
-        bump,
-    )]
-    pub master_edition_a: Option<Box<Account<'info, MasterEditionAccount>>>,
-    #[account(
-        mut,
-        seeds = [
-            b"metadata",
-            token_metadata_program.key().as_ref(),
-            mint_a.key().as_ref(),
-            b"token_record",
-            vault.key().as_ref(),
-            ],
-        seeds::program = token_metadata_program.key(),
-        bump,
-    )]
-    pub vault_token_record_a: Option<Box<Account<'info, TokenRecordAccount>>>,
     #[account(mut)]
-    /// CHECK: we don't need to check this
-    pub taker_token_record_a: UncheckedAccount<'info>,
+    pub taker: Signer<'info>,
 
-    #[account(
-        mut,
-        seeds = [
-            b"metadata",
-            token_metadata_program.key().as_ref(),
-            mint_b.key().as_ref()
-        ],
-        seeds::program = token_metadata_program.key(),
-        bump,
-    )]
-    pub metadata_b: Box<Account<'info, MetadataAccount>>,
-    #[account(
-        seeds = [
-            b"metadata",
-            token_metadata_program.key().as_ref(),
-            mint_b.key().as_ref(),
-            b"edition",
-            ],
-        seeds::program = token_metadata_program.key(),
-        bump,
-    )]
-    pub master_edition_b: Option<Box<Account<'info, MasterEditionAccount>>>,
-    #[account(
-        mut,
-        seeds = [
-            b"metadata",
-            token_metadata_program.key().as_ref(),
-            mint_a.key().as_ref(),
-            b"token_record",
-            taker_ata_b.key().as_ref(),
-            ],
-        seeds::program = token_metadata_program.key(),
-        bump,
-    )]
-    pub taker_token_record_b: Option<Box<Account<'info, TokenRecordAccount>>>,
+    pub mint_a: Box<Account<'info, Mint>>, 
+    pub mint_b: Box<Account<'info, Mint>>,
+
     #[account(mut)]
-    /// CHECK: we don't need to check this
-    pub maker_token_record_b: UncheckedAccount<'info>,
+    pub metadata: Box<Account<'info, MetadataAccount>>,
+    #[account(mut)]
+    pub master_edition: Option<Box<Account<'info, MasterEditionAccount>>>,
+    #[account(mut)]
+    pub origin_token_record: Option<Box<Account<'info, TokenRecordAccount>>>,
+    #[account(mut)]
+    /// CHECK: we're checking this later
+    pub destination_token_record: UncheckedAccount<'info>,
+
+    #[account(mut)]
+    pub origin_ata: Box<Account<'info, TokenAccount>>, //Start: Vault; End: Taker_ata
+    #[account(mut)]
+    pub destination_ata: Box<Account<'info, TokenAccount>>, //Start: Taker_ata; End: Maker_ata
 
     #[account(
-        init_if_needed,
-        payer = taker,
-        associated_token::mint = mint_a,
-        associated_token::authority = escrow
-    )]
-    pub vault: Box<Account<'info, TokenAccount>>,
-    #[account(
-        init_if_needed,
-        payer = taker,
-        associated_token::mint = mint_a,
-        associated_token::authority = taker
-    )]
-    pub taker_ata_a: Box<Account<'info, TokenAccount>>,
-    #[account(
-        init_if_needed,
-        payer = taker,
-        associated_token::mint = mint_b,
-        associated_token::authority = taker
-    )]
-    pub taker_ata_b: Box<Account<'info, TokenAccount>>,
-    #[account(
-        init_if_needed,
-        payer = taker,
-        associated_token::mint = mint_b,
-        associated_token::authority = maker
-    )]
-    pub maker_ata_b: Box<Account<'info, TokenAccount>>,
-
-    #[account(
-        init,
-        payer = maker,
         seeds = [b"escrow", maker.key().as_ref(), mint_a.key().as_ref(), mint_b.key().as_ref()],
         bump,
-        space = Escrow::space()
     )]
     pub escrow: Box<Account<'info, Escrow>>,
 
@@ -150,75 +59,98 @@ pub struct Take<'info> {
 }
 
 impl<'info> Take<'info> {
-    pub fn take(
+    pub fn take_from_escrow(
         &mut self,
-        amount: u64, //To set in the make
         bumps: TakeBumps,
     ) -> Result<()> {
-        
-        /*  Transfer from the Vault to the Taker  */
 
         //All deferred errors
         let mint_a_key = self.mint_a.key();
+        let mint_b_key = self.mint_b.key();
+        let maker_key = self.maker.key();
+        let metadata_token_standard = self.metadata.token_standard.as_ref().unwrap();
         let token_metadata_program_key = self.token_metadata_program.key();
-        let mut master_edition_info: AccountInfo<'_>;
-        let mut token_record_info: AccountInfo<'_>;
-        let mut destination_token_record_info: AccountInfo<'_>;
+        let master_edition_info: AccountInfo<'_>;
+        let token_record_info: AccountInfo<'_>;
+        let destination_token_record_info: AccountInfo<'_>;
 
-        // Set-up the Instruction based on the token standard
+        // Set-up the Instruction based on the token standard - We set it up as a Fungible by default
         let mut edition: Option<&AccountInfo> = None;
         let mut token_record: Option<&AccountInfo> = None;
         let mut destination_token_record: Option<&AccountInfo> = None;
         let mut transfer_args = TransferArgs::V1 {
-            amount: self.vault.amount,
+            amount: self.origin_ata.amount,
             authorization_data: None,
         };
 
-        match self.escrow.mint_a_type {
-            Fungible => {},
-            NonFungible => {
-                master_edition_info = self.master_edition_a.as_ref().unwrap().to_account_info();
-                edition = Some(&master_edition_info);
-                transfer_args = TransferArgs::V1 {
-                    amount: 1,
-                    authorization_data: None,
-                };
-            },
-            ProgrammableNonFungible => {
+        // Check the Metadata account
+        let metadata_seed = [
+            b"metadata",
+            token_metadata_program_key.as_ref(),
+            mint_a_key.as_ref(),
+        ];
+        let (metadata, _) = Pubkey::find_program_address(&metadata_seed, &self.token_metadata_program.key());
+        require_keys_eq!(metadata, self.metadata.key(), EscrowError::MetadataAccountDoesNotMatch);
 
-                //Check the token record
-                let token_record_seed = [
-                    b"metadata",
-                    token_metadata_program_key.as_ref(),
-                    mint_a_key.as_ref(),
-                    b"token_record",
-                    self.taker_ata_a.to_account_info().key.as_ref(),
-                ];
-                let (taker_token_record_a, _bump) = Pubkey::find_program_address(&token_record_seed, &token_metadata_program_key);
-                require_eq!(taker_token_record_a, self.taker_token_record_a.key());
 
-                master_edition_info = self.master_edition_a.as_ref().unwrap().to_account_info();
-                token_record_info = self.vault_token_record_a.as_ref().unwrap().to_account_info();
-                destination_token_record_info = self.taker_token_record_a.as_ref().to_account_info();
+        if metadata_token_standard == &TokenStandard::NonFungible || metadata_token_standard == &TokenStandard::ProgrammableNonFungible {
+            
+            //Check the Master Edition account
+            let master_edition_seed = [
+                b"metadata",
+                token_metadata_program_key.as_ref(),
+                mint_a_key.as_ref(),
+                b"edition",
+            ];
+            let (master_edition, _) = Pubkey::find_program_address(&master_edition_seed, &self.token_metadata_program.key());
+            require_keys_eq!(master_edition, self.master_edition.as_ref().unwrap().key(), EscrowError::MasterEditionAccountDoesNotMatch);
+            
+            master_edition_info = self.master_edition.as_ref().unwrap().to_account_info();
+            edition = Some(&master_edition_info);
+            transfer_args = TransferArgs::V1 {
+                amount: 1,
+                authorization_data: None,
+            };
+        } 
+        
+        if metadata_token_standard == &TokenStandard::ProgrammableNonFungible {
 
-                edition = Some(&master_edition_info);
-                token_record = Some(&token_record_info);
-                destination_token_record = Some(&destination_token_record_info);
-                transfer_args = TransferArgs::V1 {
-                    amount: 1,
-                    authorization_data: None,
-                };
-            }
-        }
+            //Check the token record
+            let token_record_account_seed = [
+                b"metadata",
+                token_metadata_program_key.as_ref(),
+                mint_a_key.as_ref(),
+                b"token_record",
+                self.origin_ata.to_account_info().key.as_ref(),
+            ];
+            let (origin_token_record_pda, _) = Pubkey::find_program_address(&token_record_account_seed, &self.token_metadata_program.key());
+            require_keys_eq!(origin_token_record_pda, self.origin_token_record.as_ref().unwrap().key(), EscrowError::TokenRecordAccountDoesNotMatch);
+
+            let token_record_account_seed = [
+                b"metadata",
+                token_metadata_program_key.as_ref(),
+                mint_a_key.as_ref(),
+                b"token_record",
+                self.destination_ata.to_account_info().key.as_ref(),
+            ];
+            let (destination_token_record_pda, _) = Pubkey::find_program_address(&token_record_account_seed, &self.token_metadata_program.key());
+            require_keys_eq!(destination_token_record_pda, self.destination_token_record.key(), EscrowError::TokenRecordAccountDoesNotMatch);
+
+            token_record_info = self.origin_token_record.as_ref().unwrap().to_account_info();
+            destination_token_record_info = self.destination_token_record.to_account_info();
+
+            token_record = Some(&token_record_info);
+            destination_token_record = Some(&destination_token_record_info);
+        };
 
         // Build the TransferCpi instruction to transfer the token from the maker to the escrow
         let program = &self.token_metadata_program.to_account_info();
-        let token = &self.vault.to_account_info();
+        let token = &self.origin_ata.to_account_info();
         let token_owner = &self.escrow.to_account_info();
-        let destination_token = &self.taker_ata_a.to_account_info();
+        let destination_token = &self.destination_ata.to_account_info();
         let destination_owner = &self.taker.to_account_info();
         let mint = &self.mint_a.to_account_info();
-        let metadata = &self.metadata_a.to_account_info();
+        let metadata = &self.metadata.to_account_info();
         let authority = &self.escrow.to_account_info();
         let payer = &self.taker.to_account_info();
         let system_program = &self.system_program.to_account_info();
@@ -255,10 +187,6 @@ impl<'info> Take<'info> {
             },
         );
 
-        let mint_a_key = self.mint_a.key();
-        let mint_b_key = self.mint_b.key();
-        let maker_key = self.maker.key();
-
         let seeds = &[
             "escrow".as_bytes(),
             maker_key.as_ref(),
@@ -270,63 +198,122 @@ impl<'info> Take<'info> {
 
         transfer_cpi.invoke_signed(signer_seeds)?;
 
+        // Set up Instruction Introspection to make sure that:
+        // 1. The token was transferred from the taker to the maker after this transaction
+        // 2. It happened atomically
 
-        /*  Transfer from the Taker to the Maker  */
+        // We load the current transaction, see the current index and see if the instruction after this is the trasnfer_to_escrow instruction
+        let index = load_current_index_checked(&self.sysvar_instructions.to_account_info())?;
+        let ix = load_instruction_at_checked(index as usize + 1, &self.sysvar_instructions.to_account_info())?;
+
+
+        // We need to make sure that: 
+        // 1. The instruction is is the trasnfer_to_escrow instruction.
+        // 2. The Token is the same as the one specified in the escrow && the receiver is the maker.
+        // 3. The amount sent is the same of the amount specified in the escrow.
+
+        // Testing 1: We know that the first 8 bytes of the data of the transaction is the discriminator
+        require_keys_eq!(ix.program_id, crate::ID, IntrospectionError::InvalidProgram);
+        require!(ix.data[0..8].eq(crate::instruction::TakerToMaker::DISCRIMINATOR.as_slice()), IntrospectionError::InvalidDiscriminator);
+
+        // Testing 2: We know that the 10th account is going to be the destination_ata, and we know that we want that as the maker_ata
+        let maker_ata = get_associated_token_address(&self.maker.key(), &self.mint_b.key());
+        require_keys_eq!(ix.accounts.get(9).unwrap().pubkey, maker_ata, IntrospectionError::InvalidMakerATA);
+        
+        // Testing 3: We know that 8 bites (u8) after the discriminator will be the amount since it's the only variable we are passing
+        require!(ix.data[8..16].eq(&self.escrow.mint_b_amount.to_le_bytes()), IntrospectionError::InvalidAmount);
+
+        Ok(())
+    }
+
+    pub fn taker_to_maker(
+        &mut self,
+        amount: u64,
+    ) -> Result<()> {
+
+        require_eq!(amount, self.escrow.mint_b_amount, EscrowError::InvalidAmount);
 
         //All deferred errors
         let mint_b_key = self.mint_b.key();
-        let metadata_b_token_standard = self.metadata_b.token_standard.as_ref().unwrap();
+        let metadata_token_standard = self.metadata.token_standard.as_ref().unwrap();
+        let token_metadata_program_key = self.token_metadata_program.key();
+        let master_edition_info: AccountInfo<'_>;
+        let token_record_info: AccountInfo<'_>;
+        let destination_token_record_info: AccountInfo<'_>;
 
-        // Set-up the Instruction based on the token standard
-        edition = None;
-        token_record = None;
-        destination_token_record = None;
-        transfer_args = TransferArgs::V1 {
+        // Set-up the Instruction based on the token standard - We set it up as a Fungible by default
+        let mut edition: Option<&AccountInfo> = None;
+        let mut token_record: Option<&AccountInfo> = None;
+        let mut destination_token_record: Option<&AccountInfo> = None;
+        let transfer_args = TransferArgs::V1 {
             amount,
             authorization_data: None,
         };
 
-        if metadata_b_token_standard == &TokenStandard::NonFungible {
-            master_edition_info = self.master_edition_b.as_ref().unwrap().to_account_info();
+        // Check the Metadata account
+        let metadata_seed = [
+            b"metadata",
+            token_metadata_program_key.as_ref(),
+            mint_b_key.as_ref(),
+        ];
+        let (metadata, _) = Pubkey::find_program_address(&metadata_seed, &self.token_metadata_program.key());
+        require_keys_eq!(metadata, self.metadata.key(), EscrowError::MetadataAccountDoesNotMatch);
+
+
+        if metadata_token_standard == &TokenStandard::NonFungible || metadata_token_standard == &TokenStandard::ProgrammableNonFungible {
+            
+            //Check the Master Edition account
+            let master_edition_seed = [
+                b"metadata",
+                token_metadata_program_key.as_ref(),
+                mint_b_key.as_ref(),
+                b"edition",
+            ];
+            let (master_edition, _) = Pubkey::find_program_address(&master_edition_seed, &self.token_metadata_program.key());
+            require_keys_eq!(master_edition, self.master_edition.as_ref().unwrap().key(), EscrowError::MasterEditionAccountDoesNotMatch);
+            
+            master_edition_info = self.master_edition.as_ref().unwrap().to_account_info();
             edition = Some(&master_edition_info);
-            transfer_args = TransferArgs::V1 {
-                amount: 1,
-                authorization_data: None,
-            };
-        } else if metadata_b_token_standard == &TokenStandard::ProgrammableNonFungible {
+        } 
+        
+        if metadata_token_standard == &TokenStandard::ProgrammableNonFungible {
 
             //Check the token record
-            let token_record_seed = [
+            let token_record_account_seed = [
                 b"metadata",
                 token_metadata_program_key.as_ref(),
                 mint_b_key.as_ref(),
                 b"token_record",
-                self.maker_ata_b.to_account_info().key.as_ref(),
+                self.origin_ata.to_account_info().key.as_ref(),
             ];
-            let (maker_token_record_b, _bump) = Pubkey::find_program_address(&token_record_seed, &token_metadata_program_key);
-            require_eq!(maker_token_record_b, self.maker_token_record_b.key());
+            let (origin_token_record_pda, _) = Pubkey::find_program_address(&token_record_account_seed, &self.token_metadata_program.key());
+            require_keys_eq!(origin_token_record_pda, self.origin_token_record.as_ref().unwrap().key(), EscrowError::TokenRecordAccountDoesNotMatch);
 
-            master_edition_info = self.master_edition_b.as_ref().unwrap().to_account_info();
-            token_record_info = self.taker_token_record_b.as_ref().unwrap().to_account_info();
-            destination_token_record_info = self.maker_token_record_b.as_ref().to_account_info();
+            let token_record_account_seed = [
+                b"metadata",
+                token_metadata_program_key.as_ref(),
+                mint_b_key.as_ref(),
+                b"token_record",
+                self.destination_ata.to_account_info().key.as_ref(),
+            ];
+            let (destination_token_record_pda, _) = Pubkey::find_program_address(&token_record_account_seed, &self.token_metadata_program.key());
+            require_keys_eq!(destination_token_record_pda, self.destination_token_record.key(), EscrowError::TokenRecordAccountDoesNotMatch);
 
-            edition = Some(&master_edition_info);
+            token_record_info = self.origin_token_record.as_ref().unwrap().to_account_info();
+            destination_token_record_info = self.destination_token_record.to_account_info();
+
             token_record = Some(&token_record_info);
             destination_token_record = Some(&destination_token_record_info);
-            transfer_args = TransferArgs::V1 {
-                amount: 1,
-                authorization_data: None,
-            };
         };
 
         // Build the TransferCpi instruction to transfer the token from the maker to the escrow
         let program = &self.token_metadata_program.to_account_info();
-        let token = &self.taker_ata_b.to_account_info();
+        let token = &self.origin_ata.to_account_info();
         let token_owner = &self.taker.to_account_info();
-        let destination_token = &self.maker_ata_b.to_account_info();
+        let destination_token = &self.destination_ata.to_account_info();
         let destination_owner = &self.maker.to_account_info();
         let mint = &self.mint_b.to_account_info();
-        let metadata = &self.metadata_b.to_account_info();
+        let metadata = &self.metadata.to_account_info();
         let authority = &self.taker.to_account_info();
         let payer = &self.taker.to_account_info();
         let system_program = &self.system_program.to_account_info();
@@ -367,4 +354,5 @@ impl<'info> Take<'info> {
 
         Ok(())
     }
+
 }

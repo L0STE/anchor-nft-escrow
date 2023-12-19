@@ -4,7 +4,9 @@ import { IDL, NftEscrow } from "../target/types/nft_escrow";
 import { PublicKey, 
   Commitment,
   SystemProgram, 
-  LAMPORTS_PER_SOL } from "@solana/web3.js";
+  LAMPORTS_PER_SOL,
+  Transaction,
+} from "@solana/web3.js";
 
 import {
   createFungible,
@@ -18,7 +20,8 @@ import {
   TOKEN_PROGRAM_ID,
   ASSOCIATED_TOKEN_PROGRAM_ID,
   getAssociatedTokenAddressSync,
-  mintTo
+  mintTo,
+  createAssociatedTokenAccountIdempotentInstruction
 } from "@solana/spl-token";
 
 import {Connection} from "@solana/web3.js";
@@ -271,16 +274,17 @@ describe("anchor-nft-escrow", () => {
       );
 
       const signature = await program.methods
-      .make(new anchor.BN(1))
+      .make(new anchor.BN(10), new anchor.BN(10))
       .accounts({
         maker: maker.publicKey,
         makerAta: makerAtaA,
         mintA,
-        mintB,
         metadataA,
         masterEditionA: null,
         makerTokenRecordA: null,
         vaultTokenRecordA: anchor.web3.Keypair.generate().publicKey,
+        mintB,
+        metadataB,
         vault,
         escrow,
         sysvarInstructions: anchor.web3.SYSVAR_INSTRUCTIONS_PUBKEY,
@@ -291,9 +295,8 @@ describe("anchor-nft-escrow", () => {
       })
       .signers([maker]).rpc({skipPreflight: true}).then(confirm).then(log);
     });
-    
-    xit("Close", async () => {
 
+    it("Close", async () => {
       const signature = await program.methods
       .close()
       .accounts({
@@ -316,27 +319,21 @@ describe("anchor-nft-escrow", () => {
       .signers([maker]).rpc({skipPreflight: true}).then(confirm).then(log);
     });
 
-    it("Take", async () => {
+    xit("Take", async () => {
 
-      const signature = await program.methods
-      .take(new anchor.BN(1))
+      const take1 = await program.methods
+      .takeFromEscrow()
       .accounts({
-        taker: taker.publicKey,
         maker: maker.publicKey,
+        taker: taker.publicKey,
         mintA,
         mintB,
-        metadataA,
-        masterEditionA: null,
-        vaultTokenRecordA: null,
-        takerTokenRecordA: anchor.web3.Keypair.generate().publicKey,
-        metadataB,
-        masterEditionB: null,
-        takerTokenRecordB: null,
-        makerTokenRecordB: anchor.web3.Keypair.generate().publicKey,
-        vault,
-        takerAtaA,
-        takerAtaB,
-        makerAtaB,
+        metadata: metadataA,
+        masterEdition: null,
+        originTokenRecord: null,
+        destinationTokenRecord: anchor.web3.Keypair.generate().publicKey,
+        originAta: vault,
+        destinationAta: takerAtaA,
         escrow,
         sysvarInstructions: anchor.web3.SYSVAR_INSTRUCTIONS_PUBKEY,
         tokenMetadataProgram: MPL_TOKEN_METADATA_PROGRAM_ID,
@@ -344,11 +341,50 @@ describe("anchor-nft-escrow", () => {
         associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
         systemProgram: SystemProgram.programId,
       })
-      .signers([taker]).rpc({skipPreflight: true}).then(confirm).then(log);
+      .instruction()
+
+      const take2 = await program.methods
+      .takerToMaker(new anchor.BN(10))
+      .accounts({
+        maker: maker.publicKey,
+        taker: taker.publicKey,
+        mintA,
+        mintB,
+        metadata: metadataB,
+        masterEdition: null,
+        originTokenRecord: null,
+        destinationTokenRecord: anchor.web3.Keypair.generate().publicKey,
+        originAta: takerAtaB,
+        destinationAta: makerAtaB,
+        escrow,
+        sysvarInstructions: anchor.web3.SYSVAR_INSTRUCTIONS_PUBKEY,
+        tokenMetadataProgram: MPL_TOKEN_METADATA_PROGRAM_ID,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+      })
+      .instruction()
+
+      let tx = new Transaction();
+
+      tx.instructions = [
+        createAssociatedTokenAccountIdempotentInstruction(taker.publicKey, takerAtaA, taker.publicKey, mintA),
+        createAssociatedTokenAccountIdempotentInstruction(taker.publicKey, makerAtaB, maker.publicKey, mintB),  
+        take1,
+        take2
+      ]
+
+      try {
+        await provider.sendAndConfirm(tx, [ taker ]).then(confirm).then(log);
+      } catch(e) {
+        console.log(e);
+        throw(e)
+      }
     });
+
   });
 
-  xdescribe("NFT escrow", () => {
+  describe("NFT escrow", () => {
     
     it("Creates a NftA", async () => {
       // Metaplex Setup
@@ -521,16 +557,17 @@ describe("anchor-nft-escrow", () => {
       );
 
       const signature = await program.methods
-      .make(new anchor.BN(1))
+      .make(new anchor.BN(10), new anchor.BN(10))
       .accounts({
         maker: maker.publicKey,
         makerAta: makerAtaA,
         mintA,
-        mintB,
         metadataA,
         masterEditionA,
         makerTokenRecordA: null,
         vaultTokenRecordA: anchor.web3.Keypair.generate().publicKey,
+        mintB,
+        metadataB,
         vault,
         escrow,
         sysvarInstructions: anchor.web3.SYSVAR_INSTRUCTIONS_PUBKEY,
@@ -541,9 +578,8 @@ describe("anchor-nft-escrow", () => {
       })
       .signers([maker]).rpc({skipPreflight: true}).then(confirm).then(log);
     });
-    
-    it("Close", async () => {
 
+    it("Close", async () => {
       const signature = await program.methods
       .close()
       .accounts({
@@ -565,9 +601,72 @@ describe("anchor-nft-escrow", () => {
       })
       .signers([maker]).rpc({skipPreflight: true}).then(confirm).then(log);
     });
+
+    xit("Take", async () => {
+
+      const take1 = await program.methods
+      .takeFromEscrow()
+      .accounts({
+        maker: maker.publicKey,
+        taker: taker.publicKey,
+        mintA,
+        mintB,
+        metadata: metadataA,
+        masterEdition: masterEditionA,
+        originTokenRecord: null,
+        destinationTokenRecord: anchor.web3.Keypair.generate().publicKey,
+        originAta: vault,
+        destinationAta: takerAtaA,
+        escrow,
+        sysvarInstructions: anchor.web3.SYSVAR_INSTRUCTIONS_PUBKEY,
+        tokenMetadataProgram: MPL_TOKEN_METADATA_PROGRAM_ID,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+      })
+      .instruction()
+
+      const take2 = await program.methods
+      .takerToMaker(new anchor.BN(1))
+      .accounts({
+        maker: maker.publicKey,
+        taker: taker.publicKey,
+        mintA,
+        mintB,
+        metadata: metadataB,
+        masterEdition: masterEditionB,
+        originTokenRecord: null,
+        destinationTokenRecord: anchor.web3.Keypair.generate().publicKey,
+        originAta: takerAtaB,
+        destinationAta: makerAtaB,
+        escrow,
+        sysvarInstructions: anchor.web3.SYSVAR_INSTRUCTIONS_PUBKEY,
+        tokenMetadataProgram: MPL_TOKEN_METADATA_PROGRAM_ID,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+      })
+      .instruction()
+
+      let tx = new Transaction();
+
+      tx.instructions = [
+        createAssociatedTokenAccountIdempotentInstruction(taker.publicKey, takerAtaA, taker.publicKey, mintA),
+        createAssociatedTokenAccountIdempotentInstruction(taker.publicKey, makerAtaB, maker.publicKey, mintB),  
+        take1,
+        take2
+      ]
+      try {
+        await provider.sendAndConfirm(tx, [ taker ]).then(confirm).then(log);
+      } catch(e) {
+        console.log(e);
+        throw(e)
+      }
+    });
+    
   });
 
-  xdescribe("pNFT escrow", () => {
+  describe("pNFT escrow", () => {
     
     it("Creates a PNftA", async () => {
       // Metaplex Setup
@@ -785,16 +884,17 @@ describe("anchor-nft-escrow", () => {
       vaultTokenRecordA = PublicKey.findProgramAddressSync(taker_token_record_seeds, new PublicKey(MPL_TOKEN_METADATA_PROGRAM_ID))[0];
 
       const signature = await program.methods
-      .make(new anchor.BN(1))
+      .make(new anchor.BN(10), new anchor.BN(10))
       .accounts({
         maker: maker.publicKey,
         makerAta: makerAtaA,
         mintA,
-        mintB,
         metadataA,
         masterEditionA,
         makerTokenRecordA,
         vaultTokenRecordA,
+        mintB,
+        metadataB,
         vault,
         escrow,
         sysvarInstructions: anchor.web3.SYSVAR_INSTRUCTIONS_PUBKEY,
@@ -805,9 +905,8 @@ describe("anchor-nft-escrow", () => {
       })
       .signers([maker]).rpc({skipPreflight: true}).then(confirm).then(log);
     });
-    
-    it("Close", async () => {
 
+    it("Close", async () => {
       const signature = await program.methods
       .close()
       .accounts({
@@ -829,6 +928,69 @@ describe("anchor-nft-escrow", () => {
       })
       .signers([maker]).rpc({skipPreflight: true}).then(confirm).then(log);
     });
+
+    xit("Take", async () => {
+
+      const take1 = await program.methods
+      .takeFromEscrow()
+      .accounts({
+        maker: maker.publicKey,
+        taker: taker.publicKey,
+        mintA,
+        mintB,
+        metadata: metadataA,
+        masterEdition: masterEditionA,
+        originTokenRecord: vaultTokenRecordA,
+        destinationTokenRecord: takerTokenRecordA,
+        originAta: vault,
+        destinationAta: takerAtaA,
+        escrow,
+        sysvarInstructions: anchor.web3.SYSVAR_INSTRUCTIONS_PUBKEY,
+        tokenMetadataProgram: MPL_TOKEN_METADATA_PROGRAM_ID,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+      })
+      .instruction()
+
+      const take2 = await program.methods
+      .takerToMaker(new anchor.BN(1))
+      .accounts({
+        maker: maker.publicKey,
+        taker: taker.publicKey,
+        mintA,
+        mintB,
+        metadata: metadataB,
+        masterEdition: masterEditionB,
+        originTokenRecord: takerTokenRecordB,
+        destinationTokenRecord: makerTokenRecordB,
+        originAta: takerAtaB,
+        destinationAta: makerAtaB,
+        escrow,
+        sysvarInstructions: anchor.web3.SYSVAR_INSTRUCTIONS_PUBKEY,
+        tokenMetadataProgram: MPL_TOKEN_METADATA_PROGRAM_ID,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+      })
+      .instruction()
+
+      let tx = new Transaction();
+
+      tx.instructions = [
+        createAssociatedTokenAccountIdempotentInstruction(taker.publicKey, takerAtaA, taker.publicKey, mintA),
+        createAssociatedTokenAccountIdempotentInstruction(taker.publicKey, makerAtaB, maker.publicKey, mintB),  
+        take1,
+        take2
+      ]
+      try {
+        await provider.sendAndConfirm(tx, [ taker ]).then(confirm).then(log);
+      } catch(e) {
+        console.log(e);
+        throw(e)
+      }
+    });
+    
   });
     
 });

@@ -12,7 +12,7 @@ use anchor_spl::{
 };
 use mpl_token_metadata::types::TransferArgs;
 
-use crate::state::{Escrow, MintType};
+use crate::state::Escrow;
 
 #[derive(Accounts)]
 pub struct Make<'info> {
@@ -27,8 +27,6 @@ pub struct Make<'info> {
     pub maker_ata: Box<Account<'info, TokenAccount>>,
 
     pub mint_a: Box<Account<'info, Mint>>,
-    pub mint_b: Box<Account<'info, Mint>>,  
-
     #[account(
         mut,
         seeds = [
@@ -68,6 +66,20 @@ pub struct Make<'info> {
     /// CHECK: we don't need to check this
     pub vault_token_record_a: UncheckedAccount<'info>,
 
+    pub mint_b: Box<Account<'info, Mint>>,
+    #[account(
+        mut,
+        seeds = [
+            b"metadata",
+            token_metadata_program.key().as_ref(),
+            mint_b.key().as_ref()
+        ],
+        seeds::program = token_metadata_program.key(),
+        bump,
+    )]
+    pub metadata_b: Box<Account<'info, MetadataAccount>>,
+
+
     #[account(
         init_if_needed,
         payer = maker,
@@ -97,6 +109,7 @@ impl<'info> Make<'info> {
     pub fn make(
         &mut self, 
         amount: u64,
+        taker_amount: u64,
     ) -> Result<()> {
         
         //All deferred errors
@@ -107,7 +120,7 @@ impl<'info> Make<'info> {
         let token_record_info: AccountInfo<'_>;
         let vault_token_record_info: AccountInfo<'_>;
 
-        // Set-up the Instruction based on the token standard
+        // Set-up the Instruction based on the token standard - We set it up as a Fungible by default
         let mut edition: Option<&AccountInfo> = None;
         let mut token_record: Option<&AccountInfo> = None;
         let mut destination_token_record: Option<&AccountInfo> = None;
@@ -115,18 +128,18 @@ impl<'info> Make<'info> {
             amount,
             authorization_data: None,
         };
+        let mut taker_amount = taker_amount;
 
-        if metadata_a_token_standard == &TokenStandard::Fungible {
-            self.escrow.mint_a_type = MintType::Fungible;
-        } else if metadata_a_token_standard == &TokenStandard::NonFungible {
+        if metadata_a_token_standard == &TokenStandard::NonFungible || metadata_a_token_standard == &TokenStandard::ProgrammableNonFungible {
             master_edition_info = self.master_edition_a.as_ref().unwrap().to_account_info();
             edition = Some(&master_edition_info);
             transfer_args = TransferArgs::V1 {
                 amount: 1,
                 authorization_data: None,
             };
-            self.escrow.mint_a_type = MintType::NonFungible;
-        } else if metadata_a_token_standard == &TokenStandard::ProgrammableNonFungible {
+        } 
+        
+        if metadata_a_token_standard == &TokenStandard::ProgrammableNonFungible {
 
             //Check the token record
             let token_record_seed = [
@@ -139,19 +152,11 @@ impl<'info> Make<'info> {
             let (vault_token_record_a, _bump) = Pubkey::find_program_address(&token_record_seed, &token_metadata_program_key);
             require_eq!(vault_token_record_a, self.vault_token_record_a.key());
 
-            master_edition_info = self.master_edition_a.as_ref().unwrap().to_account_info();
             token_record_info = self.maker_token_record_a.as_ref().unwrap().to_account_info();
             vault_token_record_info = self.vault_token_record_a.to_account_info();
 
-
-            edition = Some(&master_edition_info);
             token_record = Some(&token_record_info);
             destination_token_record = Some(&vault_token_record_info);
-            transfer_args = TransferArgs::V1 {
-                amount: 1,
-                authorization_data: None,
-            };
-            self.escrow.mint_a_type = MintType::ProgrammableNonFungible;
         };
 
         // Build the TransferCpi instruction to transfer the token from the maker to the escrow
@@ -199,6 +204,18 @@ impl<'info> Make<'info> {
         );
 
         transfer_cpi.invoke()?;
+
+        if self.metadata_b.token_standard.as_ref().unwrap() == &TokenStandard::NonFungible || self.metadata_b.token_standard.as_ref().unwrap() == &TokenStandard::ProgrammableNonFungible {
+            taker_amount = 1;
+        }
+
+        self.escrow.set_inner(
+            Escrow {
+                mint_a: self.mint_a.key(),
+                mint_b: self.mint_b.key(),
+                mint_b_amount: taker_amount,
+            }
+        );
 
         Ok(())
     }

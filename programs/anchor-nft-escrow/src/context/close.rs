@@ -1,15 +1,18 @@
 use solana_program::*;
+
 use anchor_lang::prelude::*;
-use mpl_token_metadata::types::TransferArgs;
 use anchor_spl::{
     token::{Mint, TokenAccount, Token}, 
-    associated_token::AssociatedToken,
     metadata::{MetadataAccount, MasterEditionAccount, Metadata, TokenRecordAccount, 
-        mpl_token_metadata::instructions::{TransferCpi, TransferCpiAccounts, TransferInstructionArgs}
-    }
+        mpl_token_metadata::{
+            instructions::{TransferCpi, TransferCpiAccounts, TransferInstructionArgs}, 
+            types::TokenStandard}
+        },
+    associated_token::AssociatedToken
 };
+use mpl_token_metadata::types::TransferArgs;
 
-use crate::state::{Escrow, MintType::*};
+use crate::state::Escrow;
 
 #[derive(Accounts)]
 pub struct Close<'info> {
@@ -94,6 +97,7 @@ impl<'info> Close<'info> {
     ) -> Result<()> {
 
         let mint_a_key = self.mint_a.key();
+        let metadata_a_token_standard = self.metadata_a.token_standard.as_ref().unwrap();
         let token_metadata_program_key = self.token_metadata_program.key();
         let master_edition_info: AccountInfo<'_>;
         let token_record_info: AccountInfo<'_>;
@@ -108,43 +112,34 @@ impl<'info> Close<'info> {
             authorization_data: None,
         };
 
-        match self.escrow.mint_a_type {
-            Fungible => {},
-            NonFungible => {
-                master_edition_info = self.master_edition_a.as_ref().unwrap().to_account_info();
-                edition = Some(&master_edition_info);
-                transfer_args = TransferArgs::V1 {
-                    amount: 1,
-                    authorization_data: None,
-                };
-            },
-            ProgrammableNonFungible => {
+        if metadata_a_token_standard == &TokenStandard::NonFungible || metadata_a_token_standard == &TokenStandard::ProgrammableNonFungible {
+            master_edition_info = self.master_edition_a.as_ref().unwrap().to_account_info();
+            edition = Some(&master_edition_info);
+            transfer_args = TransferArgs::V1 {
+                amount: 1,
+                authorization_data: None,
+            };
+        } 
+        
+        if metadata_a_token_standard == &TokenStandard::ProgrammableNonFungible {
 
-                //Check the token record
-                let token_record_seed = [
-                    b"metadata",
-                    token_metadata_program_key.as_ref(),
-                    mint_a_key.as_ref(),
-                    b"token_record",
-                    self.maker_ata.to_account_info().key.as_ref(),
-                ];
-                let (maker_token_record_a, _bump) = Pubkey::find_program_address(&token_record_seed, &token_metadata_program_key);
-                require_eq!(maker_token_record_a, self.maker_token_record_a.key());
+            //Check the token record
+            let token_record_seed = [
+                b"metadata",
+                token_metadata_program_key.as_ref(),
+                mint_a_key.as_ref(),
+                b"token_record",
+                self.maker_ata.to_account_info().key.as_ref(),
+            ];
+            let (maker_token_record_a, _bump) = Pubkey::find_program_address(&token_record_seed, &token_metadata_program_key);
+            require_eq!(maker_token_record_a, self.maker_token_record_a.key());
 
-                master_edition_info = self.master_edition_a.as_ref().unwrap().to_account_info();
-                token_record_info = self.maker_token_record_a.as_ref().to_account_info();
-                vault_token_record_info = self.vault_token_record_a.as_ref().unwrap().to_account_info();
+            token_record_info = self.vault_token_record_a.as_ref().unwrap().to_account_info();
+            vault_token_record_info = self.maker_token_record_a.to_account_info();
 
-                edition = Some(&master_edition_info);
-                token_record = Some(&vault_token_record_info);
-                destination_token_record = Some(&token_record_info);
-                transfer_args = TransferArgs::V1 {
-                    amount: 1,
-                    authorization_data: None,
-                };
-            }
-            
-        }
+            token_record = Some(&token_record_info);
+            destination_token_record = Some(&vault_token_record_info);
+        };
 
         // Build the TransferCpi instruction to transfer the token from the maker to the escrow
         let program = &self.token_metadata_program.to_account_info();
